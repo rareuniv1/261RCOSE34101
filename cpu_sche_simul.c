@@ -1,16 +1,16 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <time.h>
-
 // 질문 결과 : I/O는 예를 들어 0~3 범위 내에서 일어나도록 할 수 있다.
 #define MAX_IO_EVENTS 3 
+// 한 줄에 담을 수 있는 범위에 따라 달라질 듯?
+#define MAX_PROCESSES 10
 
 // 1. 개별 IO 요청을 담을 구조체 IO_Request
 typedef struct {
     int io_start_offset; // I/O가 시작될 부분
     int io_burst;        // I/O 종료시각 : io_burst + io_start_offset + Waiting time
 } IO_Request;
-
 // 2. 프로세스 구조체
 typedef struct {
     int pid;                                // 프로세스를 나타낼 숫자
@@ -48,7 +48,7 @@ void Create_Process(Process* plist, int count) {
             for (int k = 0; k < j; k++) {
                 if (plist[i].io_requests[k].io_start_offset == offset) {    // 데이터를 생성했는데 만약 중복이라면
                     duplicate = 1;              
-                    break;                                                  // 큐에 추가 x -> 랜덤이 됨!
+                    break;                                                  // 큐에 추가 x
                 }
             }
             
@@ -61,7 +61,6 @@ void Create_Process(Process* plist, int count) {
         }
 
         // 발생 시점(offset) 기준으로 오름차순 정렬 (버블 정렬)
-        // 실제 시간의 흐름에 따라 큐에서 꺼내 써야 하므로 정렬 필수!
         for (int x = 0; x < num_io - 1; x++) {
             for (int y = 0; y < num_io - 1 - x; y++) {
                 if (plist[i].io_requests[y].io_start_offset > plist[i].io_requests[y+1].io_start_offset) {
@@ -73,7 +72,6 @@ void Create_Process(Process* plist, int count) {
         }
     }
 }
-
 // 4. 출력 함수
 void Print_Processes(Process* plist, int count) {
     printf("========================================================================================\n");
@@ -81,10 +79,7 @@ void Print_Processes(Process* plist, int count) {
     printf("========================================================================================\n");
     for (int i = 0; i < count; i++) {
         printf(" %3d | %7d | %3d | %7d | ",
-               plist[i].pid,
-               plist[i].arrival_time,
-               plist[i].cpu_burst,
-               plist[i].io_count);
+               plist[i].pid, plist[i].arrival_time, plist[i].cpu_burst, plist[i].io_count);
                
         // 다중 I/O 출력 (문자열 폭을 맞추기 위해 버퍼 사용)
         char io_str[60] = "";
@@ -105,15 +100,47 @@ void Print_Processes(Process* plist, int count) {
     printf("========================================================================================\n");
 }
 
+// 1. 큐(Queue) 구조체 정의
+typedef struct {
+    Process* items[MAX_PROCESSES]; // 구조체 포인터 배열로 큐 구현
+    int front;
+    int rear;
+    int count;
+} Queue;
+// 글로벌 시스템 큐 선언
+Queue ready_queue;
+Queue waiting_queue;
+// 2. 큐 초기화 함수
+void Init_Queue(Queue* q) {
+    q->front = 0;
+    q->rear = -1;
+    q->count = 0;
+}
+// 3. 환경 설정 함수 (Config)
+void Config() {
+    // 시스템 큐 초기화
+    Init_Queue(&ready_queue);
+    Init_Queue(&waiting_queue);
+    
+    printf("[Config] Ready Queue 및 Waiting Queue 초기화 완료.\n");
+}
+
+// 4. 업데이트된 메인 함수
 int main() {
     int process_count = 7;
-    Process process_list[7];
-
+    Process job_pool[7];  
+    // 1) 난수 시드 초기화 (필수)
     srand((unsigned int)time(NULL));
+    // 2) 시스템 환경 설정 (큐 초기화)
+    Config();
+    // 3) 프로세스 생성
+    Create_Process(job_pool, process_count);
+    
+    printf("[System] %d개의 프로세스가 생성되었습니다. 스케줄러 시뮬레이션을 시작할 준비가 되었습니다.\n", process_count);
+    Print_Processes(job_pool, process_count);
 
-    printf("다중 I/O가 적용된 프로세스 %d개를 생성합니다...\n\n", process_count);
-    Create_Process(process_list, process_count);
-    Print_Processes(process_list, process_count);
+    // TODO: 여기에 current_time 기반의 시뮬레이션 루프가 들어갑니다.
+    // 예: while(종료조건) { ... current_time++; }
 
     return 0;
 }
