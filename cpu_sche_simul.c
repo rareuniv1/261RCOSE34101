@@ -107,16 +107,38 @@ typedef struct {
     int rear;
     int count;
 } Queue;
-// 글로벌 시스템 큐 선언
+// 글로벌 시스템 큐 + 프로세스 공간 선언
 Queue ready_queue;
 Queue waiting_queue;
+Process job_pool[MAX_PROCESSES];
 // 2. 큐 초기화 함수
 void Init_Queue(Queue* q) {
     q->front = 0;
     q->rear = -1;
     q->count = 0;
 }
-// 3. 환경 설정 함수 (Config)
+// 3. 큐에 프로세스를 삽입하는 함수 (Enqueue)
+void Enqueue(Queue* q, Process* p) {
+    if (q->count >= MAX_PROCESSES) {
+        printf("[Error] Queue is Full! PID %d 삽입 실패\n", p->pid);
+        return;
+    }
+    // 원형 큐(Circular Queue) 방식으로 인덱스 계산
+    q->rear = (q->rear + 1) % MAX_PROCESSES;
+    q->items[q->rear] = p;
+    q->count++;
+}
+// 4. 큐에서 프로세스를 꺼내는 함수 (Dequeue) - 곧 스케줄러에서 쓰일 예정!
+Process* Dequeue(Queue* q) {
+    if (q->count <= 0) {
+        return NULL; // 큐가 비어있음
+    }
+    Process* p = q->items[q->front];
+    q->front = (q->front + 1) % MAX_PROCESSES;
+    q->count--;
+    return p;
+}
+// 5. 환경 설정 함수 (Config)
 void Config() {
     // 시스템 큐 초기화
     Init_Queue(&ready_queue);
@@ -124,23 +146,39 @@ void Config() {
     
     printf("[Config] Ready Queue 및 Waiting Queue 초기화 완료.\n");
 }
+// 6. 문지기 함수: 시간에 맞춰 도착한 프로세스를 Ready Queue로 보냄
+void Check_Arrival(int current_time) {
+    for (int i = 0; i < MAX_PROCESSES; i++) {
+        // job_pool에 있는 프로세스 중, 현재 시간과 도착 시간이 일치하는 녀석을 찾음
+        if (job_pool[i].arrival_time == current_time) {
+            
+            Enqueue(&ready_queue, &job_pool[i]);
+            
+            // 시뮬레이션 로그를 보기 좋게 출력
+            printf("[Time %3d] 🚪 PID %2d 프로세스 도착! -> [Ready Queue 진입] (CPU 잔여: %d, I/O 횟수: %d)\n", 
+                   current_time, 
+                   job_pool[i].pid, 
+                   job_pool[i].cpu_burst, 
+                   job_pool[i].io_count);
+        }
+    }
+}
 
-// 4. 업데이트된 메인 함수
 int main() {
-    int process_count = 7;
-    Process job_pool[7];  
-    // 1) 난수 시드 초기화 (필수)
     srand((unsigned int)time(NULL));
     // 2) 시스템 환경 설정 (큐 초기화)
     Config();
-    // 3) 프로세스 생성
-    Create_Process(job_pool, process_count);
-    
-    printf("[System] %d개의 프로세스가 생성되었습니다. 스케줄러 시뮬레이션을 시작할 준비가 되었습니다.\n", process_count);
-    Print_Processes(job_pool, process_count);
-
-    // TODO: 여기에 current_time 기반의 시뮬레이션 루프가 들어갑니다.
-    // 예: while(종료조건) { ... current_time++; }
+    // 3) 프로세스 생성 (전역 변수 job_pool을 그대로 사용)
+    Create_Process(job_pool, MAX_PROCESSES);
+    Print_Processes(job_pool, MAX_PROCESSES);
+    printf("[System] %d개의 프로세스가 생성되었습니다. 스케줄러 시뮬레이션을 시작할 준비가 되었습니다.\n\n", MAX_PROCESSES);
+    // 시뮬레이션 루프
+    int current_time = 0;
+    // 예시: 0초부터 20초까지만 문지기 작동 테스트
+    while(current_time <= 20) {
+        Check_Arrival(current_time);
+        current_time++;
+    }
 
     return 0;
 }
