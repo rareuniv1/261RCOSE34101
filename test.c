@@ -2,7 +2,9 @@
 #include <stdlib.h>
 #include <time.h>
 #define MAX_PROCESSES 10
+#define NUM_PROCESSES 10
 #define MAX_IO_DEVICES 5
+#define MAX_TIME 1000    // 시뮬레이션 최대 시간 (타임아웃 방지 및 간트 차트 배열 크기)
 // ----------------------------------------------- [New Phase] -------------------------------------------------
 
 // 프로세스의 현재 상태를 나타내는 열거형
@@ -432,15 +434,6 @@ void Record_Termination(Process* p, int system_time) {
     printf("====================================================\n");
 }
 
-#include <stdio.h>
-#include <stdlib.h>
-#include <time.h>
-
-#define NUM_PROCESSES 5  // 테스트를 위해 프로세스 5개로 설정
-#define MAX_IO_DEVICES 5
-
-// (이전에 작성한 모든 구조체와 함수들이 위에 선언되어 있다고 가정합니다)
-
 // 원본 프로세스 풀 복사 함수 (파이프라인 2 확장을 위한 준비)
 void Copy_Process_Pool(Process source[], Process dest[], int count) {
     for (int i = 0; i < count; i++) {
@@ -448,119 +441,272 @@ void Copy_Process_Pool(Process source[], Process dest[], int count) {
     }
 }
 
-int main() {
-    // 1. 초기 셋팅 및 난수 시드 고정
-    srand((unsigned int)time(NULL)); 
-    
-    Process job_pool_origin[NUM_PROCESSES];
-    Process working_pool[NUM_PROCESSES];
-    
+// 알고리즘 종류를 구분하기 위한 열거형(Enum)
+typedef enum {
+    ALGO_FCFS = 2,
+    ALGO_NP_SJF = 3,
+    ALGO_NP_PRIORITY = 4,
+    ALGO_RR = 5,
+    ALGO_P_SJF = 6,
+    ALGO_P_PRIORITY = 7
+} AlgoType;
+
+// 시뮬레이션 실행 결과를 담을 통계 구조체 (8번 비교 화면용)
+typedef struct {
+    double avg_turnaround;
+    double avg_waiting;
+    int success; // 실행 여부 플래그
+} AlgoResult;
+
+// 단일 시뮬레이션을 수행하는 핵심 코어 함수 (로그 출력 여부를 선택할 수 있음)
+// 매개변수에 'int num_processes'가 추가되었습니다!
+AlgoResult Execute_Simulation(Process origin_pool[], int num_processes, AlgoType algo, int time_quantum, int show_logs) {
+    // 이제 최대 크기(MAX_PROCESSES)만큼 배열을 넉넉히 잡아둡니다.
+    Process working_pool[MAX_PROCESSES]; 
     ReadyQueue ready_queue;
     WaitQueue device_wait_queues[MAX_IO_DEVICES + 1];
-
-    // 2. 프로세스 팩토리 가동 (원본 데이터 생성)
-    Create_Process(job_pool_origin, NUM_PROCESSES);
     
-    printf("\n=================================================================\n");
-    printf(" 🏭 System Booting... Initialized Process Pool (Origin Data)\n");
-    Print_Process_List(job_pool_origin, NUM_PROCESSES);
-    
-    // 시뮬레이션을 위해 원본 훼손을 막고 복사본(working_pool) 사용
-    Copy_Process_Pool(job_pool_origin, working_pool, NUM_PROCESSES);
+    int gantt_record[MAX_TIME];
+    for (int i = 0; i < MAX_TIME; i++) gantt_record[i] = -1;
 
-    // 3. 큐 초기화
-    Init_ReadyQueue(&ready_queue);
-    for (int i = 1; i <= MAX_IO_DEVICES; i++) {
-        Init_WaitQueue(&device_wait_queues[i]);
+    // 데이터 복사 및 초기화 (num_processes 만큼만 복사!)
+    for (int i = 0; i < num_processes; i++) {
+        working_pool[i] = origin_pool[i]; 
     }
+    Init_ReadyQueue(&ready_queue);
+    for (int i = 1; i <= MAX_IO_DEVICES; i++) Init_WaitQueue(&device_wait_queues[i]);
 
-    // ====================================================================
-    // ⏰ 시뮬레이션 메인 루프 시작
-    // ====================================================================
     int system_time = 0;
     int terminated_count = 0;
+    int current_q_time = 0; // RR용 퀀텀 타이머
     Process* current_running = NULL;
 
-    printf("\n=================================================================\n");
-    printf(" 🚀 Simulation Start! (Algorithm: Non-preemptive SJF)\n");
-    printf("=================================================================\n");
+    if (show_logs) {
+        printf("\n=================================================================\n");
+        printf(" 🚀 시뮬레이션 시작! (알고리즘 번호: %d, 프로세스 개수: %d)\n", algo, num_processes);
+        printf("=================================================================\n");
+    }
 
-    while (terminated_count < NUM_PROCESSES) {
-        
-        // 1. 신규 프로세스 도착 확인 (Ready Queue 진입)
-        for (int i = 0; i < NUM_PROCESSES; i++) {
+    // 종료 조건도 num_processes 로 변경!
+    while (terminated_count < num_processes && system_time < MAX_TIME) {
+        // 1. 신규 프로세스 도착 확인
+        for (int i = 0; i < num_processes; i++) {
             if (working_pool[i].Arrival_Time == system_time) {
                 Insert_ReadyQueue(&ready_queue, &working_pool[i]);
-                printf("[TIME %3d] 📥 PID %d Arrived! (Entered Ready Queue)\n", system_time, working_pool[i].PID);
+                if (show_logs) printf("[TIME %3d] 📥 PID %d 도착! (준비 큐 진입)\n", system_time, working_pool[i].PID);
             }
         }
 
-        // ====================================================================
-        // 🛠️ [수정됨] 2. 다중 I/O 장치 병렬 실행 영역 (순서 올림)
-        // 먼저 각 I/O 장치들의 남은 시간을 1초씩 깎아줍니다.
-        // 이렇게 하면 아래 CPU 영역에서 이번 Tick에 막 I/O를 요청한 애가
-        // 중복해서 1초를 더 깎이는 '더블 카운팅' 버그가 완벽히 차단됩니다!
-        // ====================================================================
+        // 2. 다중 I/O 장치 처리
         Process_IO_Ticks(device_wait_queues, &ready_queue, system_time);
 
-        // ====================================================================
-        // 3. CPU 실행 영역 (1 Tick)
-        // ====================================================================
+        // 3. CPU 실행 영역
         if (current_running != NULL) {
             ProcessState next_state = Run_Process_Tick(current_running);
+            current_q_time++;
 
             if (next_state == TERMINATED) {
-                Record_Termination(current_running, system_time);
+                // 로그 출력 여부와 상관없이 시간 계산 수행
+                current_running->P_State = TERMINATED;
+                current_running->Termination_Time = system_time;
+                current_running->Turnaround_Time = system_time - current_running->Arrival_Time;
+
+                if (show_logs) {
+                    printf("====================================================\n");
+                    printf("[TIME %3d] 🏁 PID %d Terminated!\n", system_time, current_running->PID);
+                    printf(" - Arrival Time   : %d\n", current_running->Arrival_Time);
+                    printf(" - Turnaround Time: %d\n", current_running->Turnaround_Time);
+                    printf(" - Waiting Time   : %d\n", current_running->Waiting_Time);
+                    printf("====================================================\n");
+                }
+
                 terminated_count++;
-                current_running = NULL; 
+                current_running = NULL;
+                current_q_time = 0;
             } 
             else if (next_state == WAITING) {
                 int dev_num = current_running->IO_Reqs[current_running->IO_Req_Now].IO_Device;
                 Enqueue_WaitQueue(&device_wait_queues[dev_num], current_running);
-                printf("[TIME %3d] 🔄 PID %d Requested I/O -> Device %d Wait Queue\n", 
-                       system_time, current_running->PID, dev_num);
-                current_running = NULL; 
+                if (show_logs) printf("[TIME %3d] 🔄 PID %d I/O 요청 -> 장치 %d 대기 큐 이동\n", system_time, current_running->PID, dev_num);
+                current_running = NULL;
+                current_q_time = 0;
+            }
+            // 3-1. Round Robin 타임 퀀텀 만료 선점 처리
+            else if (algo == ALGO_RR && current_q_time >= time_quantum) {
+                if (show_logs) printf("[TIME %3d] ⏱️ PID %d 타임 퀀텀 만료! (선점당함)\n", system_time, current_running->PID);
+                current_running->Now_Arrival = system_time;
+                Insert_ReadyQueue(&ready_queue, current_running);
+                current_running = NULL;
+                current_q_time = 0;
             }
         }
 
-        // 4. 스케줄링 영역 (CPU가 비어있을 때 다음 프로세스 선정)
+        // 3-2. 선점형 알고리즘(SRTF, Preemptive Priority) 매 틱 검사
+        if (current_running != NULL && ready_queue.count > 0) {
+            if (algo == ALGO_P_SJF) {
+                current_running = Check_Preemptive_SJF(&ready_queue, current_running, system_time);
+                current_running->P_State = RUNNING;
+            } 
+            else if (algo == ALGO_P_PRIORITY) {
+                current_running = Check_Preemption_Priority(&ready_queue, current_running, system_time);
+                current_running->P_State = RUNNING;
+            }
+        }
+
+        // 4. 스케줄러 호출
         if (current_running == NULL && ready_queue.count > 0) {
-            current_running = Schedule_SJF_NonPreemp(&ready_queue);
+            switch (algo) {
+                case ALGO_FCFS: case ALGO_RR: current_running = Schedule_FCFS(&ready_queue); break;
+                case ALGO_NP_SJF:             current_running = Schedule_SJF_NonPreemp(&ready_queue); break;
+                case ALGO_NP_PRIORITY:        current_running = Schedule_Priority_NonPreemp(&ready_queue); break;
+                case ALGO_P_SJF:              Sort_ReadyQueue(&ready_queue, compare_srtf); current_running = Remove_ReadyQueue(&ready_queue, 0); break;
+                case ALGO_P_PRIORITY:         Sort_ReadyQueue(&ready_queue, compare_priority_preemp); current_running = Remove_ReadyQueue(&ready_queue, 0); break;
+            }
             current_running->P_State = RUNNING;
-            printf("[TIME %3d] ⚙️  PID %d Scheduled to RUN on CPU!\n", system_time, current_running->PID);
+            if (show_logs) printf("[TIME %3d] ⚙️  PID %d CPU 할당 완료!\n", system_time, current_running->PID);
         }
-        for (int i = 0; i < ready_queue.count; i++) {
-            ready_queue.list[i]->Waiting_Time++;
-        }
-        // 5. 시간 흐름
+
+        // 5. 간트 차트 기록 및 대기 시간 누적
+        if (current_running != NULL) gantt_record[system_time] = current_running->PID;
+        for (int i = 0; i < ready_queue.count; i++) ready_queue.list[i]->Waiting_Time++;
+
         system_time++;
-        
-        // (무한 루프 방지용 안전장치)
-        if (system_time > 1000) {
-            printf("\n[ERROR] Simulation Timeout! Check Arrival Times or Loop Logic.\n");
+    }
+
+    // 통계 계산 (마찬가지로 num_processes 기준으로 변경)
+    double total_tt = 0, total_wt = 0;
+    for (int i = 0; i < num_processes; i++) {
+        total_tt += working_pool[i].Turnaround_Time;
+        total_wt += working_pool[i].Waiting_Time;
+    }
+
+    // 간트 차트 출력
+    if (show_logs) {
+        printf("\n=================================================================\n");
+        printf(" 🎨 간트 차트 (CPU 타임라인)\n");
+        printf("=================================================================\n");
+        int current_pid = gantt_record[0], start_t = 0;
+        for (int t = 1; t <= system_time; t++) {
+            if (t == system_time || gantt_record[t] != current_pid) {
+                if (current_pid == -1) printf("| IDLE (%d-%d) ", start_t, t);
+                else printf("| P%d (%d-%d) ", current_pid, start_t, t);
+                current_pid = gantt_record[t];
+                start_t = t;
+            }
+        }
+        printf("|\n=================================================================\n");
+    }
+
+    // 평균 낼 때도 num_processes로 나눔
+    AlgoResult res = { total_tt / num_processes, total_wt / num_processes, 1 };
+    return res;
+}
+
+int main() {
+    srand((unsigned int)time(NULL));
+    int num_processes = (rand() % 9) + 2;
+    Process job_pool_origin[NUM_PROCESSES];
+    int is_generated = 0; // 프로세스 집합 생성 여부 체크 플래그
+    int menu_choice;
+    int time_quantum = 3; // 기본값
+    
+    AlgoResult benchmark_results[8]; // 2~7번 결과 저장 배열
+
+    while (1) {
+        printf("\n=================================================================\n");
+        printf(" 🖥️  CPU 스케줄링 대화형 시뮬레이터 (파이프라인 1)\n");
+        printf("=================================================================\n");
+        printf(" 1. 프로세스 집합 무작위 생성 및 출력\n");
+        printf(" 2. FCFS (First-Come, First-Served) 실행\n");
+        printf(" 3. Non-preemptive SJF 실행\n");
+        printf(" 4. Non-preemptive Priority 실행\n");
+        printf(" 5. Round Robin 실행 (Time Quantum 별도 입력)\n");
+        printf(" 6. Preemptive SJF (SRTF) 실행\n");
+        printf(" 7. Preemptive Priority 실행\n");
+        printf(" 8. [종합 평가] 2~7번 알고리즘 평균 시간 비교 테이블 출력\n");
+        printf(" 9. 프로그램 종료\n");
+        printf("=================================================================\n");
+        printf(" 메뉴를 선택하세요 (1~9): ");
+        scanf("%d", &menu_choice);
+
+        if (menu_choice == 9) {
+            printf("시뮬레이터를 종료합니다. 이용해 주셔서 감사합니다!\n");
             break;
         }
-    }
 
-    // ====================================================================
-    // 📊 최종 통계 출력 영역
-    // ====================================================================
-    printf("\n=================================================================\n");
-    printf(" 📈 Simulation Completed! Final Statistics\n");
-    printf("=================================================================\n");
-    
-    double total_turnaround = 0, total_waiting = 0;
-    for (int i = 0; i < NUM_PROCESSES; i++) {
-        total_turnaround += working_pool[i].Turnaround_Time;
-        total_waiting += working_pool[i].Waiting_Time;
-        printf("PID %2d | Turnaround: %3d | Waiting: %3d\n", 
-               working_pool[i].PID, working_pool[i].Turnaround_Time, working_pool[i].Waiting_Time);
-    }
-    
-    printf("-----------------------------------------------------------------\n");
-    printf(" Average Turnaround Time : %.2f\n", total_turnaround / NUM_PROCESSES);
-    printf(" Average Waiting Time    : %.2f\n", total_waiting / NUM_PROCESSES);
-    printf("=================================================================\n");
+        // 방어적 코드: 프로세스 생성을 안 하고 2~8번을 누른 경우 처리
+        if (menu_choice >= 1 && menu_choice <= 8 && !is_generated && menu_choice != 1) {
+            printf("\n⚠️ 먼저 1번 메뉴를 선택하여 프로세스 집합을 생성해야 합니다!\n");
+            continue;
+        }
 
+        switch (menu_choice) {
+            case 1:
+                // [수정] 변수명(num_processes) 명시
+                num_processes = (rand() % 9) + 2;
+                
+                // [수정] NUM_PROCESSES 대신 num_processes 사용
+                Create_Process(job_pool_origin, num_processes);
+                printf("\n=================================================================\n");
+                printf(" 🏭 시스템 부팅 완료... 신규 프로세스 집합이 생성되었습니다. (총 %d개)\n", num_processes);
+                Print_Process_List(job_pool_origin, num_processes);
+                is_generated = 1;
+                break;
+
+            case 2: case 3: case 4: case 6: case 7:
+                // [수정] 두 번째 인자로 num_processes 전달
+                Execute_Simulation(job_pool_origin, num_processes, (AlgoType)menu_choice, 0, 1);
+                break;
+
+            case 5:
+                printf(" 사용할 Time Quantum을 입력하세요 (정수): ");
+                scanf("%d", &time_quantum);
+                if (time_quantum <= 0) {
+                    printf("⚠️ 유효하지 않은 시간입니다. 기본값(3)으로 설정합니다.\n");
+                    time_quantum = 3;
+                }
+                // [수정] 두 번째 인자로 num_processes 전달
+                Execute_Simulation(job_pool_origin, num_processes, ALGO_RR, time_quantum, 1);
+                break;
+
+            case 8:
+                printf("\n=================================================================\n");
+                printf(" ⚙️  종합 평가 설정\n");
+                printf(" Round Robin에 적용할 Time Quantum 값을 입력하세요 (정수): ");
+                scanf("%d", &time_quantum);
+                
+                if (time_quantum <= 0) {
+                    printf("⚠️ 유효하지 않은 시간입니다. 기본값(3)으로 설정합니다.\n");
+                    time_quantum = 3;
+                }
+
+                // [개선] 몇 개의 프로세스로 측정하는지 안내 출력
+                printf("\n동일한 프로세스 셋(%d개)에 대해 모든 알고리즘 성능 측정을 시작합니다...\n", num_processes);
+                
+                for (int a = 2; a <= 7; a++) {
+                    // [수정] 두 번째 인자로 num_processes 전달
+                    benchmark_results[a] = Execute_Simulation(job_pool_origin, num_processes, (AlgoType)a, time_quantum, 0);
+                }
+
+                printf("\n=================================================================\n");
+                // [개선] 표 제목에도 프로세스 개수 표시
+                printf(" 📊 스케줄링 알고리즘 종합 성능 평가 표 (프로세스 %d개)\n", num_processes);
+                printf("=================================================================\n");
+                printf("  알고리즘 종류            |  평균 반환시간 (ATT)  |  평균 대기시간 (AWT) \n");
+                printf("-----------------------------------------------------------------\n");
+                printf("  [2] FCFS                 |        %6.2f         |        %6.2f\n", benchmark_results[2].avg_turnaround, benchmark_results[2].avg_waiting);
+                printf("  [3] Non-preemp SJF       |        %6.2f         |        %6.2f\n", benchmark_results[3].avg_turnaround, benchmark_results[3].avg_waiting);
+                printf("  [4] Non-preemp Priority  |        %6.2f         |        %6.2f\n", benchmark_results[4].avg_turnaround, benchmark_results[4].avg_waiting);
+                printf("  [5] Round Robin (TQ=%-2d)  |        %6.2f         |        %6.2f\n", time_quantum, benchmark_results[5].avg_turnaround, benchmark_results[5].avg_waiting);
+                printf("  [6] Preemptive SJF       |        %6.2f         |        %6.2f\n", benchmark_results[6].avg_turnaround, benchmark_results[6].avg_waiting);
+                printf("  [7] Preemptive Priority  |        %6.2f         |        %6.2f\n", benchmark_results[7].avg_turnaround, benchmark_results[7].avg_waiting);
+                printf("=================================================================\n");
+                break;
+
+            default:
+                printf("⚠️ 잘못된 입력입니다. 1번에서 9번 사이의 숫자를 입력해 주세요.\n");
+                break;
+        }
+    }
     return 0;
 }
