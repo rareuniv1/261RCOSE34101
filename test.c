@@ -5,6 +5,35 @@
 #define NUM_PROCESSES 10
 #define MAX_IO_DEVICES 5
 #define MAX_TIME 1000
+#include <stdarg.h> // [추가] 가변 인자 처리를 위해 반드시 필요
+
+// =================================================================
+// 📝 로깅(Logging) 시스템 구축
+// =================================================================
+FILE *log_file = NULL; // 전역 로그 파일 포인터
+
+// 터미널과 로그 파일에 동시에 출력하는 커스텀 출력 함수
+int my_printf(const char *format, ...) {
+    int result;
+    va_list args;
+
+    // 1. 터미널(stdout)에 출력
+    va_start(args, format);
+    result = vprintf(format, args);
+    va_end(args);
+
+    // 2. 파일(log_file)이 열려있다면 파일에도 출력
+    if (log_file != NULL) {
+        va_start(args, format);
+        vfprintf(log_file, format, args);
+        va_end(args);
+        fflush(log_file); // 버퍼에 쌓아두지 않고 파일에 즉시 쓰기! (중간에 뻗어도 로그 보존)
+    }
+    return result;
+}
+
+// 🔥 [핵심 흑마법] 기존 코드의 모든 printf를 my_printf로 자동 치환
+#define printf my_printf
 // ----------------------------------------------- [New Phase] -------------------------------------------------
 
 // 프로세스의 현재 상태를 나타내는 열거형
@@ -512,7 +541,7 @@ AlgoResult Execute_Simulation(Process origin_pool[], int num_processes, AlgoType
 
                 if (show_logs) {
                     printf("====================================================\n");
-                    printf("[TIME %3d] 🏁 PID %d Terminated!\n", system_time, current_running->PID);
+                    printf("[TIME %3d] PID %d Terminated!\n", system_time, current_running->PID);
                     printf(" - Arrival Time   : %d\n", current_running->Arrival_Time);
                     printf(" - Turnaround Time: %d\n", current_running->Turnaround_Time);
                     printf(" - Waiting Time   : %d\n", current_running->Waiting_Time);
@@ -562,7 +591,7 @@ AlgoResult Execute_Simulation(Process origin_pool[], int num_processes, AlgoType
                 case ALGO_P_PRIORITY:         Sort_ReadyQueue(&ready_queue, compare_priority_preemp); current_running = Remove_ReadyQueue(&ready_queue, 0); break;
             }
             current_running->P_State = RUNNING;
-            if (show_logs) printf("[TIME %3d] ⚙️  PID %d CPU 할당 완료!\n", system_time, current_running->PID);
+            if (show_logs) printf("[TIME %3d] PID %d CPU Allocated!\n", system_time, current_running->PID);
         }
 
         // 5. 간트 차트 기록 및 대기 시간 누적
@@ -582,13 +611,20 @@ AlgoResult Execute_Simulation(Process origin_pool[], int num_processes, AlgoType
     // 간트 차트 출력
     if (show_logs) {
         printf("\n=================================================================\n");
-        printf(" 🎨 Gantt Chart\n");
+        printf(" Gantt Chart (CPU Timeline)\n");
         printf("=================================================================\n");
         int current_pid = gantt_record[0], start_t = 0;
         for (int t = 1; t <= system_time; t++) {
             if (t == system_time || gantt_record[t] != current_pid) {
+                
+                // 🛠️ [추가된 방어 코드] 마지막 블록이 IDLE이고, 시뮬레이션의 끝이라면 그리지 않고 탈출!
+                if (current_pid == -1 && t == system_time) {
+                    break;
+                }
+
                 if (current_pid == -1) printf("| IDLE (%d-%d) ", start_t, t);
                 else printf("| P%d (%d-%d) ", current_pid, start_t, t);
+                
                 current_pid = gantt_record[t];
                 start_t = t;
             }
@@ -603,107 +639,162 @@ AlgoResult Execute_Simulation(Process origin_pool[], int num_processes, AlgoType
 
 int main() {
     srand((unsigned int)time(NULL));
-    int num_processes = (rand() % 9) + 2;
-    Process job_pool_origin[NUM_PROCESSES];
-    int is_generated = 0; // 프로세스 집합 생성 여부 체크 플래그
-    int menu_choice;
-    int time_quantum = 3; // 기본값
+
+    log_file = fopen("scheduler_log.txt", "a");
+    if (log_file != NULL) {
+        time_t now = time(NULL);
+        // 이 printf는 화면에도 나오고 파일에도 자동으로 기록됩니다!
+        printf("\n\n=================================================================\n");
+        printf(" [SYSTEM LOG] Simulator Boot Sequence Started at: %s", ctime(&now));
+        printf("=================================================================\n");
+    } else {
+        // 혹시 권한 문제로 파일이 안 열리면 화면에만 에러 출력
+        fprintf(stdout, " Warning: Failed to open scheduler_log.txt. Running without file logging.\n");
+    }
     
-    AlgoResult benchmark_results[8]; // 2~7번 결과 저장 배열
+    Process job_pool_origin[MAX_PROCESSES];
+    AlgoResult benchmark_results[8];
+    int is_generated = 0; 
+    int menu_choice;
+    int time_quantum = 5; 
+    int num_processes = 0;
 
     while (1) {
         printf("\n=================================================================\n");
-        printf(" !!CPU Scheduling Interactive Simulator!!\n");
+        printf(" 🖥️  CPU Scheduling Interactive Simulator\n");
         printf("=================================================================\n");
-        printf(" 1. Random Process Set Creation\n");
-        printf(" 2. FCFS (First-Come, First-Served)\n");
-        printf(" 3. Non-preemptive SJF\n");
-        printf(" 4. Non-preemptive Priority\n");
-        printf(" 5. Round Robin\n");
-        printf(" 6. Preemptive SJF (SRTF)\n");
-        printf(" 7. Preemptive Priority\n");
-        printf(" 8. [Total Evaluation] Print Average Time Comparison Table for Menu 2~7\n");
-        printf(" 9. Termination\n");
+        printf(" 1. Generate New Process Set (Random 2~10)\n");
+        printf(" 2. Run FCFS (First-Come, First-Served)\n");
+        printf(" 3. Run Non-preemptive SJF\n");
+        printf(" 4. Run Non-preemptive Priority\n");
+        printf(" 5. Run Round Robin (RR)\n");
+        printf(" 6. Run Preemptive SJF (SRTF)\n");
+        printf(" 7. Run Preemptive Priority\n");
+        printf(" 8. [Evaluation] Print Average Time Comparison Table (Algos 2-7)\n");
+        printf(" 9. 🔥 [Stress Test] Run 20 Independent Process Sets (Monte Carlo)\n");
+        printf(" 10. Exit Program\n");
         printf("=================================================================\n");
-        printf(" Choose Menu(1~9): ");
-        scanf("%d", &menu_choice);
+        printf(" Select Menu (1~10): ");
+        
+        if (scanf("%d", &menu_choice) != 1) {
+            while(getchar() != '\n'); 
+            continue;
+        }
+        if (log_file != NULL) {
+            fprintf(log_file, "%d\n", menu_choice);
+            fflush(log_file); // 즉시 저장
+        }
 
-        if (menu_choice == 9) {
-            printf("Terminating Simulator. Thank you!\n");
+        if (menu_choice == 10) {
+            printf(" Exiting simulator. Thank you!\n");
             break;
         }
 
-        // 방어적 코드: 프로세스 생성을 안 하고 2~8번을 누른 경우 처리
-        if (menu_choice >= 1 && menu_choice <= 8 && !is_generated && menu_choice != 1) {
-            printf("\n Please Select Menu 1 first.\n");
+        if (menu_choice >= 2 && menu_choice <= 8 && !is_generated) {
+            printf(" ⚠️ Please generate a process set first! (Select Menu 1)\n");
             continue;
         }
 
         switch (menu_choice) {
             case 1:
-                // [수정] 변수명(num_processes) 명시
                 num_processes = (rand() % 9) + 2;
-                
-                // [수정] NUM_PROCESSES 대신 num_processes 사용
                 Create_Process(job_pool_origin, num_processes);
                 printf("\n=================================================================\n");
-                printf(" System Booting Done... New Process Set is Created. (Total %d Processes)\n", num_processes);
+                printf(" 🏭 System boot complete... New process set generated. (Total: %d)\n", num_processes);
                 Print_Process_List(job_pool_origin, num_processes);
                 is_generated = 1;
                 break;
 
             case 2: case 3: case 4: case 6: case 7:
-                // [수정] 두 번째 인자로 num_processes 전달
                 Execute_Simulation(job_pool_origin, num_processes, (AlgoType)menu_choice, 0, 1);
                 break;
 
             case 5:
-                printf(" Time Quantum (Integer): ");
+                printf(" Enter Time Quantum for Round Robin (Integer): ");
                 scanf("%d", &time_quantum);
                 if (time_quantum <= 0) {
-                    printf("Not Valid TIme. Set it as basic value (3)\n");
+                    printf(" ⚠️ Invalid time. Setting to default (3).\n");
                     time_quantum = 3;
                 }
-                // [수정] 두 번째 인자로 num_processes 전달
                 Execute_Simulation(job_pool_origin, num_processes, ALGO_RR, time_quantum, 1);
                 break;
 
             case 8:
                 printf("\n=================================================================\n");
-                printf("Total evaluation Setting\n");
-                printf("Time Quantum for Round Robin (Integer): ");
+                printf(" ⚙️  Comprehensive Evaluation Setup\n");
+                printf(" Enter Time Quantum for Round Robin (Integer): ");
                 scanf("%d", &time_quantum);
                 
                 if (time_quantum <= 0) {
-                    printf("Not valid time. Set time quantum as basic(3)\n");
+                    printf(" ⚠️ Invalid time. Setting to default (3).\n");
                     time_quantum = 3;
                 }
 
-                // [개선] 몇 개의 프로세스로 측정하는지 안내 출력
-                printf("\nStart Total algorithm evaluation for same process set (number : %d)\n", num_processes);
+                printf("\n Starting performance measurement for all algorithms on the same process set (%d processes)...\n", num_processes);
                 
                 for (int a = 2; a <= 7; a++) {
-                    // [수정] 두 번째 인자로 num_processes 전달
                     benchmark_results[a] = Execute_Simulation(job_pool_origin, num_processes, (AlgoType)a, time_quantum, 0);
                 }
 
                 printf("\n=================================================================\n");
-                // [개선] 표 제목에도 프로세스 개수 표시
-                printf(" Scheduling Algirithm Total Performance Evaluation Table (%d Processes)\n", num_processes);
+                printf(" 📊 Scheduling Algorithm Comprehensive Performance Table\n");
                 printf("=================================================================\n");
-                printf("  Algorithm                |  Average Turnaround time  |  Average Waiting time \n");
+                printf("  Algorithm Type           | Avg Turnaround (ATT) | Avg Waiting (AWT) \n");
                 printf("-----------------------------------------------------------------\n");
-                printf("  [2] FCFS                 |        %6.2f         |        %6.2f\n", benchmark_results[2].avg_turnaround, benchmark_results[2].avg_waiting);
-                printf("  [3] Non-preemp SJF       |        %6.2f         |        %6.2f\n", benchmark_results[3].avg_turnaround, benchmark_results[3].avg_waiting);
-                printf("  [4] Non-preemp Priority  |        %6.2f         |        %6.2f\n", benchmark_results[4].avg_turnaround, benchmark_results[4].avg_waiting);
-                printf("  [5] Round Robin (TQ=%-2d)  |        %6.2f         |        %6.2f\n", time_quantum, benchmark_results[5].avg_turnaround, benchmark_results[5].avg_waiting);
-                printf("  [6] Preemptive SJF       |        %6.2f         |        %6.2f\n", benchmark_results[6].avg_turnaround, benchmark_results[6].avg_waiting);
-                printf("  [7] Preemptive Priority  |        %6.2f         |        %6.2f\n", benchmark_results[7].avg_turnaround, benchmark_results[7].avg_waiting);
+                printf("  [2] FCFS                 |        %6.2f        |        %6.2f\n", benchmark_results[2].avg_turnaround, benchmark_results[2].avg_waiting);
+                printf("  [3] Non-preemp SJF       |        %6.2f        |        %6.2f\n", benchmark_results[3].avg_turnaround, benchmark_results[3].avg_waiting);
+                printf("  [4] Non-preemp Priority  |        %6.2f        |        %6.2f\n", benchmark_results[4].avg_turnaround, benchmark_results[4].avg_waiting);
+                printf("  [5] Round Robin (TQ=%-2d)  |        %6.2f        |        %6.2f\n", time_quantum, benchmark_results[5].avg_turnaround, benchmark_results[5].avg_waiting);
+                printf("  [6] Preemptive SJF       |        %6.2f        |        %6.2f\n", benchmark_results[6].avg_turnaround, benchmark_results[6].avg_waiting);
+                printf("  [7] Preemptive Priority  |        %6.2f        |        %6.2f\n", benchmark_results[7].avg_turnaround, benchmark_results[7].avg_waiting);
+                printf("=================================================================\n");
+                break;
+
+            case 9:
+                printf("\n=================================================================\n");
+                printf(" 🔥 [Stress Test] Testing 20 independent process sets.\n");
+                printf(" Enter Time Quantum for Round Robin (Integer): ");
+                scanf("%d", &time_quantum);
+                
+                if (time_quantum <= 0) {
+                    printf(" ⚠️ Invalid time. Setting to default (5).\n");
+                    time_quantum = 5;
+                }
+
+                printf("\n ⚙️ Running 20 simulations in the background. Please wait...\n");
+
+                int num_test_sets = 20;
+                double total_tt_sum[8] = {0}; 
+                double total_wt_sum[8] = {0}; 
+
+                for (int test = 1; test <= num_test_sets; test++) {
+                    int current_num = (rand() % 9) + 2;
+                    Process temp_pool[MAX_PROCESSES];
+                    Create_Process(temp_pool, current_num);
+
+                    for (int a = 2; a <= 7; a++) {
+                        AlgoResult res = Execute_Simulation(temp_pool, current_num, (AlgoType)a, time_quantum, 0);
+                        total_tt_sum[a] += res.avg_turnaround;
+                        total_wt_sum[a] += res.avg_waiting;
+                    }
+                }
+
+                printf("\n=================================================================\n");
+                printf(" 🏆 Large-scale Statistical Evaluation (Avg of %d sets)\n", num_test_sets);
+                printf("=================================================================\n");
+                printf("  Algorithm Type           | Final Avg Turnaround | Final Avg Waiting \n");
+                printf("-----------------------------------------------------------------\n");
+                printf("  [2] FCFS                 |        %6.2f        |        %6.2f\n", total_tt_sum[2] / num_test_sets, total_wt_sum[2] / num_test_sets);
+                printf("  [3] Non-preemp SJF       |        %6.2f        |        %6.2f\n", total_tt_sum[3] / num_test_sets, total_wt_sum[3] / num_test_sets);
+                printf("  [4] Non-preemp Priority  |        %6.2f        |        %6.2f\n", total_tt_sum[4] / num_test_sets, total_wt_sum[4] / num_test_sets);
+                printf("  [5] Round Robin (TQ=%-2d)  |        %6.2f        |        %6.2f\n", time_quantum, total_tt_sum[5] / num_test_sets, total_wt_sum[5] / num_test_sets);
+                printf("  [6] Preemptive SJF       |        %6.2f        |        %6.2f\n", total_tt_sum[6] / num_test_sets, total_wt_sum[6] / num_test_sets);
+                printf("  [7] Preemptive Priority  |        %6.2f        |        %6.2f\n", total_tt_sum[7] / num_test_sets, total_wt_sum[7] / num_test_sets);
                 printf("=================================================================\n");
                 break;
 
             default:
-                printf("Wrong Input Value! Please Write the number between 1~9\n");
+                printf(" ⚠️ Invalid input. Please enter a number between 1 and 10.\n");
                 break;
         }
     }
