@@ -240,9 +240,15 @@ int compare_priority_preemp(const void *a, const void *b) {
         return p1->Now_Arrival - p2->Now_Arrival;
     return p1->PID - p2->PID;
 }
-void Sort_ReadyQueue(ReadyQueue* rq, int (*compare_func)(const void*, const void*)) {
-    if (rq->count > 1) {
-        qsort(rq->list, rq->count, sizeof(Process*), compare_func);
+void Sort_ReadyQueue(ReadyQueue *q, int (*cmp)(const void*, const void*)) {
+    for (int i = 1; i < q->count; i++) {
+        Process *key = q->list[i]; // 현재 삽입할 프로세스 포인터
+        int j = i - 1;
+        while (j >= 0 && cmp(&q->list[j], &key) > 0) {
+            q->list[j + 1] = q->list[j];
+            j = j - 1;
+        }
+        q->list[j + 1] = key; // 최종 위치에 삽입
     }
 }
 
@@ -461,14 +467,12 @@ void Record_Termination(Process* p, int system_time) {
     printf(" - Waiting Time   : %d\n", p->Waiting_Time);
     printf("====================================================\n");
 }
-
 // 원본 프로세스 풀 복사 함수 (파이프라인 2 확장을 위한 준비)
 void Copy_Process_Pool(Process source[], Process dest[], int count) {
     for (int i = 0; i < count; i++) {
         dest[i] = source[i];
     }
 }
-
 // 알고리즘 종류를 구분하기 위한 열거형(Enum)
 typedef enum {
     ALGO_FCFS = 2,
@@ -478,14 +482,12 @@ typedef enum {
     ALGO_P_SJF = 6,
     ALGO_P_PRIORITY = 7
 } AlgoType;
-
 // 시뮬레이션 실행 결과를 담을 통계 구조체 (8번 비교 화면용)
 typedef struct {
     double avg_turnaround;
     double avg_waiting;
     int success; // 실행 여부 플래그
 } AlgoResult;
-
 // 단일 시뮬레이션을 수행하는 핵심 코어 함수 (로그 출력 여부를 선택할 수 있음)
 // 매개변수에 'int num_processes'가 추가되었습니다!
 AlgoResult Execute_Simulation(Process origin_pool[], int num_processes, AlgoType algo, int time_quantum, int show_logs) {
