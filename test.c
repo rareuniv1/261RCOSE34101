@@ -661,7 +661,7 @@ int main() {
 
     while (1) {
         printf("\n=================================================================\n");
-        printf(" 🖥️  CPU Scheduling Interactive Simulator\n");
+        printf(" CPU Scheduling Interactive Simulator\n");
         printf("=================================================================\n");
         printf(" 1. Generate New Process Set (Random 2~10)\n");
         printf(" 2. Run FCFS (First-Come, First-Served)\n");
@@ -671,7 +671,7 @@ int main() {
         printf(" 6. Run Preemptive SJF (SRTF)\n");
         printf(" 7. Run Preemptive Priority\n");
         printf(" 8. [Evaluation] Print Average Time Comparison Table (Algos 2-7)\n");
-        printf(" 9. 🔥 [Stress Test] Run 20 Independent Process Sets (Monte Carlo)\n");
+        printf(" 9. [Stress Test] Run 20 Independent Process Sets (Monte Carlo)\n");
         printf(" 10. Exit Program\n");
         printf("=================================================================\n");
         printf(" Select Menu (1~10): ");
@@ -691,7 +691,7 @@ int main() {
         }
 
         if (menu_choice >= 2 && menu_choice <= 8 && !is_generated) {
-            printf(" ⚠️ Please generate a process set first! (Select Menu 1)\n");
+            printf("Please generate a process set first! (Select Menu 1)\n");
             continue;
         }
 
@@ -700,7 +700,7 @@ int main() {
                 num_processes = (rand() % 9) + 2;
                 Create_Process(job_pool_origin, num_processes);
                 printf("\n=================================================================\n");
-                printf(" 🏭 System boot complete... New process set generated. (Total: %d)\n", num_processes);
+                printf("System boot complete... New process set generated. (Total: %d)\n", num_processes);
                 Print_Process_List(job_pool_origin, num_processes);
                 is_generated = 1;
                 break;
@@ -713,7 +713,7 @@ int main() {
                 printf(" Enter Time Quantum for Round Robin (Integer): ");
                 scanf("%d", &time_quantum);
                 if (time_quantum <= 0) {
-                    printf(" ⚠️ Invalid time. Setting to default (3).\n");
+                    printf("Invalid time. Setting to default (3).\n");
                     time_quantum = 3;
                 }
                 Execute_Simulation(job_pool_origin, num_processes, ALGO_RR, time_quantum, 1);
@@ -721,12 +721,12 @@ int main() {
 
             case 8:
                 printf("\n=================================================================\n");
-                printf(" ⚙️  Comprehensive Evaluation Setup\n");
+                printf("Comprehensive Evaluation Setup\n");
                 printf(" Enter Time Quantum for Round Robin (Integer): ");
                 scanf("%d", &time_quantum);
                 
                 if (time_quantum <= 0) {
-                    printf(" ⚠️ Invalid time. Setting to default (3).\n");
+                    printf("Invalid time. Setting to default (3).\n");
                     time_quantum = 3;
                 }
 
@@ -737,7 +737,7 @@ int main() {
                 }
 
                 printf("\n=================================================================\n");
-                printf(" 📊 Scheduling Algorithm Comprehensive Performance Table\n");
+                printf("Scheduling Algorithm Comprehensive Performance Table\n");
                 printf("=================================================================\n");
                 printf("  Algorithm Type           | Avg Turnaround (ATT) | Avg Waiting (AWT) \n");
                 printf("-----------------------------------------------------------------\n");
@@ -752,16 +752,16 @@ int main() {
 
             case 9:
                 printf("\n=================================================================\n");
-                printf(" 🔥 [Stress Test] Testing 20 independent process sets.\n");
+                printf("[Stress Test] Testing 20 independent process sets.\n");
                 printf(" Enter Time Quantum for Round Robin (Integer): ");
                 scanf("%d", &time_quantum);
                 
                 if (time_quantum <= 0) {
-                    printf(" ⚠️ Invalid time. Setting to default (5).\n");
+                    printf("Invalid time. Setting to default (5).\n");
                     time_quantum = 5;
                 }
 
-                printf("\n ⚙️ Running 20 simulations in the background. Please wait...\n");
+                printf("\nRunning 20 simulations in the background. Please wait...\n");
 
                 int num_test_sets = 20;
                 double total_tt_sum[8] = {0}; 
@@ -780,7 +780,7 @@ int main() {
                 }
 
                 printf("\n=================================================================\n");
-                printf(" 🏆 Large-scale Statistical Evaluation (Avg of %d sets)\n", num_test_sets);
+                printf("Large-scale Statistical Evaluation (Avg of %d sets)\n", num_test_sets);
                 printf("=================================================================\n");
                 printf("  Algorithm Type           | Final Avg Turnaround | Final Avg Waiting \n");
                 printf("-----------------------------------------------------------------\n");
@@ -794,7 +794,7 @@ int main() {
                 break;
 
             default:
-                printf(" ⚠️ Invalid input. Please enter a number between 1 and 10.\n");
+                printf("Invalid input. Please enter a number between 1 and 10.\n");
                 break;
         }
     }
