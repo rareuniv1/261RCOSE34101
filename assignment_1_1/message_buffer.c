@@ -17,7 +17,7 @@ int init_buffer(MessageBuffer **buffer) {
     shm_fd = shm_open(SHM_NAME, O_CREAT | O_RDWR, 0666);
     if (shm_fd == -1) {
         printf("shm_open error!\n");
-        return -1
+        return -1;
     }
     /* (2) set size using ftruncate()        */
     if (ftruncate(shm_fd, sizeof(MessageBuffer)) == -1) {
