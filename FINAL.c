@@ -55,43 +55,64 @@ typedef struct {
 void Create_Process(Process job_pool[], int num_processes) {
     for (int i = 0; i < num_processes; i++) {
         Process *p = &job_pool[i];
+
         p->PID = i + 1; 
+
         // 고정변수 랜덤 할당
         p->Arrival_Time = rand() % 41;                  // [0, 40]
         p->CPU_Burst_Time_T = (rand() % 17) + 4;        // [4, 20]
         p->Priority = (rand() % 10) + 1;                // [1, 10]
         p->IO_Req_Num = rand() % 4;                     // [0, 3]
+
         // 초기 상태는 NEW(생성됨)로 설정
         p->P_State = NEW; 
+
         // 동적 변수 초기화
         p->Now_Arrival = p->Arrival_Time;
         p->CPU_Burst_Time_N = p->CPU_Burst_Time_T;
         p->IO_Req_Now = 0;
+
         // 통계 변수 초기화
         p->Termination_Time = 0;
         p->Turnaround_Time = 0;
         p->Waiting_Time = 0;
         p->IO_Burst_Time_T = 0;
-        // I/O 작업 생성
+        int used_io_start_time[MAX_TIME] = {0};
+
+        // 가능한 I/O 발생 시점은 [1, CPU_Burst_Time_T - 1]
+        int max_possible_io_points = p->CPU_Burst_Time_T - 1;
+
+        // 방어 코드:
+        if (p->IO_Req_Num > max_possible_io_points) {
+            p->IO_Req_Num = max_possible_io_points;
+        }
+
         for (int j = 0; j < p->IO_Req_Num; j++) {
             p->IO_Reqs[j].IO_Device = (rand() % 5) + 1;      // [1, 5]
             p->IO_Reqs[j].IO_Burst_Time = (rand() % 20) + 1; // [1, 20]
-            // I/O 발생 시간은 CPU 작업 중간에 일어나야 하므로 [1, CPU_Burst_Time_T - 1] 범위 내에서 생성
-            if (p->CPU_Burst_Time_T > 1) {
-                p->IO_Reqs[j].IO_Start_Time = (rand() % (p->CPU_Burst_Time_T - 1)) + 1;
-            } else {
-                p->IO_Reqs[j].IO_Start_Time = 1; 
-            }
+
+            int start_time;
+
+            // I/O 발생 시간은 CPU 작업 중간에 일어나야 하므로
+            // [1, CPU_Burst_Time_T - 1] 범위 내에서 생성
+            // 단, 이미 사용된 start_time은 다시 사용하지 않음
+            do {
+                start_time = (rand() % (p->CPU_Burst_Time_T - 1)) + 1;
+            } while (used_io_start_time[start_time]);
+
+            used_io_start_time[start_time] = 1;
+            p->IO_Reqs[j].IO_Start_Time = start_time;
+
             p->IO_Burst_Time_T += p->IO_Reqs[j].IO_Burst_Time;
         }
         
         // I/O 작업 정렬 : 개수가 최대 3개이므로 가벼운 버블 정렬(Bubble Sort) 사용
         for (int j = 0; j < p->IO_Req_Num - 1; j++) {
             for (int k = 0; k < p->IO_Req_Num - j - 1; k++) {
-                if (p->IO_Reqs[k].IO_Start_Time > p->IO_Reqs[k+1].IO_Start_Time) {
+                if (p->IO_Reqs[k].IO_Start_Time > p->IO_Reqs[k + 1].IO_Start_Time) {
                     IO_Req temp = p->IO_Reqs[k];
-                    p->IO_Reqs[k] = p->IO_Reqs[k+1];
-                    p->IO_Reqs[k+1] = temp;
+                    p->IO_Reqs[k] = p->IO_Reqs[k + 1];
+                    p->IO_Reqs[k + 1] = temp;
                 }
             }
         }
@@ -503,8 +524,11 @@ AlgoResult Execute_Simulation(Process origin_pool[], int num_processes, AlgoType
     for (int i = 0; i < num_processes; i++) {
         working_pool[i] = origin_pool[i]; 
     }
+
     Init_ReadyQueue(&ready_queue);
-    for (int i = 1; i <= MAX_IO_DEVICES; i++) Init_WaitQueue(&device_wait_queues[i]);
+    for (int i = 1; i <= MAX_IO_DEVICES; i++) {
+        Init_WaitQueue(&device_wait_queues[i]);
+    }
 
     int system_time = 0;
     int terminated_count = 0;
@@ -519,31 +543,107 @@ AlgoResult Execute_Simulation(Process origin_pool[], int num_processes, AlgoType
 
     // 종료 조건도 num_processes 로 변경!
     while (terminated_count < num_processes && system_time < MAX_TIME) {
+
         // 1. 신규 프로세스 도착 확인
         for (int i = 0; i < num_processes; i++) {
             if (working_pool[i].Arrival_Time == system_time) {
                 Insert_ReadyQueue(&ready_queue, &working_pool[i]);
-                if (show_logs) printf("[TIME %3d] PID %d Arrived! (In Ready Queue)\n", system_time, working_pool[i].PID);
+
+                if (show_logs) {
+                    printf("[TIME %3d] PID %d Arrived! (In Ready Queue)\n",
+                           system_time, working_pool[i].PID);
+                }
             }
         }
 
         // 2. 다중 I/O 장치 처리
+        // I/O가 끝난 프로세스는 이 시점에 Ready Queue로 복귀합니다.
         Process_IO_Ticks(device_wait_queues, &ready_queue, system_time);
 
-        // 3. CPU 실행 영역
+        // 3. 선점형 알고리즘(SRTF, Preemptive Priority) 매 tick 검사
+        // 중요: CPU를 1 tick 실행하기 전에 선점 여부를 먼저 확인해야 합니다.
+        if (current_running != NULL && ready_queue.count > 0) {
+            if (algo == ALGO_P_SJF) {
+                current_running = Check_Preemptive_SJF(&ready_queue, current_running, system_time);
+                current_running->P_State = RUNNING;
+            } 
+            else if (algo == ALGO_P_PRIORITY) {
+                current_running = Check_Preemption_Priority(&ready_queue, current_running, system_time);
+                current_running->P_State = RUNNING;
+            }
+        }
+
+        // 4. CPU가 비어 있으면 스케줄러 호출
+        // 이제 이 시점에서 이번 tick에 실행할 프로세스를 확정합니다.
+        if (current_running == NULL && ready_queue.count > 0) {
+            switch (algo) {
+                case ALGO_FCFS:
+                    current_running = Schedule_FCFS(&ready_queue);
+                    break;
+
+                case ALGO_RR:
+                    current_running = Schedule_FCFS(&ready_queue);
+                    break;
+
+                case ALGO_NP_SJF:
+                    current_running = Schedule_SJF_NonPreemp(&ready_queue);
+                    break;
+
+                case ALGO_NP_PRIORITY:
+                    current_running = Schedule_Priority_NonPreemp(&ready_queue);
+                    break;
+
+                case ALGO_P_SJF:
+                    Sort_ReadyQueue(&ready_queue, compare_srtf);
+                    current_running = Remove_ReadyQueue(&ready_queue, 0);
+                    break;
+
+                case ALGO_P_PRIORITY:
+                    Sort_ReadyQueue(&ready_queue, compare_priority_preemp);
+                    current_running = Remove_ReadyQueue(&ready_queue, 0);
+                    break;
+            }
+
+            current_running->P_State = RUNNING;
+            current_q_time = 0;
+
+            if (show_logs) {
+                printf("[TIME %3d] PID %d CPU Allocated!\n",
+                       system_time, current_running->PID);
+            }
+        }
+
+        // 5. 이번 tick에 실제로 실행될 프로세스를 Gantt Chart에 기록
+        // 이제 기록 대상과 실제 CPU_Burst_Time_N이 감소하는 대상이 일치합니다.
+        if (current_running != NULL) {
+            gantt_record[system_time] = current_running->PID;
+        }
+
+        // 6. CPU 실행 영역
         if (current_running != NULL) {
             ProcessState next_state = Run_Process_Tick(current_running);
             current_q_time++;
 
+            /*
+             * Ready Queue에 남아 있는 프로세스들은 이번 tick 동안 CPU를 기다린 것입니다.
+             * 단, RR에서 방금 실행을 마치고 다시 Ready Queue에 들어갈 프로세스는
+             * 이번 tick 동안 기다린 것이 아니므로, 재삽입 전에 Waiting Time을 먼저 증가시킵니다.
+             */
+            for (int i = 0; i < ready_queue.count; i++) {
+                ready_queue.list[i]->Waiting_Time++;
+            }
+
             if (next_state == TERMINATED) {
-                // 로그 출력 여부와 상관없이 시간 계산 수행
+                // system_time에서 1 tick 실행했으므로 실제 종료 시점은 system_time + 1
                 current_running->P_State = TERMINATED;
-                current_running->Termination_Time = system_time;
-                current_running->Turnaround_Time = system_time - current_running->Arrival_Time;
+                current_running->Termination_Time = system_time + 1;
+                current_running->Turnaround_Time =
+                    current_running->Termination_Time - current_running->Arrival_Time;
 
                 if (show_logs) {
                     printf("====================================================\n");
-                    printf("[TIME %3d] PID %d Terminated!\n", system_time, current_running->PID);
+                    printf("[TIME %3d] PID %d Terminated!\n",
+                           system_time + 1, current_running->PID);
                     printf(" - Arrival Time   : %d\n", current_running->Arrival_Time);
                     printf(" - Turnaround Time: %d\n", current_running->Turnaround_Time);
                     printf(" - Waiting Time   : %d\n", current_running->Waiting_Time);
@@ -556,49 +656,40 @@ AlgoResult Execute_Simulation(Process origin_pool[], int num_processes, AlgoType
             } 
             else if (next_state == WAITING) {
                 int dev_num = current_running->IO_Reqs[current_running->IO_Req_Now].IO_Device;
+
                 Enqueue_WaitQueue(&device_wait_queues[dev_num], current_running);
-                if (show_logs) printf("[TIME %3d] PID %d I/O Request -> Move to Device %d Wait Queue \n", system_time, current_running->PID, dev_num);
+
+                if (show_logs) {
+                    printf("[TIME %3d] PID %d I/O Request -> Move to Device %d Wait Queue \n",
+                           system_time + 1, current_running->PID, dev_num);
+                }
+
                 current_running = NULL;
                 current_q_time = 0;
             }
-            // 3-1. Round Robin 타임 퀀텀 만료 선점 처리
+            // 6-1. Round Robin 타임 퀀텀 만료 선점 처리
             else if (algo == ALGO_RR && current_q_time >= time_quantum) {
-                if (show_logs) printf("[TIME %3d] PID %d Time Quantum Expired! (Preemption Occured...)\n", system_time, current_running->PID);
-                current_running->Now_Arrival = system_time;
+                if (show_logs) {
+                    printf("[TIME %3d] PID %d Time Quantum Expired! (Preemption Occured...)\n",
+                           system_time + 1, current_running->PID);
+                }
+
+                // 이번 tick이 끝난 뒤 Ready Queue로 돌아가므로 system_time + 1 사용
+                current_running->Now_Arrival = system_time + 1;
                 Insert_ReadyQueue(&ready_queue, current_running);
+
                 current_running = NULL;
                 current_q_time = 0;
             }
         }
-
-        // 3-2. 선점형 알고리즘(SRTF, Preemptive Priority) 매 틱 검사
-        if (current_running != NULL && ready_queue.count > 0) {
-            if (algo == ALGO_P_SJF) {
-                current_running = Check_Preemptive_SJF(&ready_queue, current_running, system_time);
-                current_running->P_State = RUNNING;
-            } 
-            else if (algo == ALGO_P_PRIORITY) {
-                current_running = Check_Preemption_Priority(&ready_queue, current_running, system_time);
-                current_running->P_State = RUNNING;
+        else {
+            // CPU가 IDLE인 경우에도 Ready Queue에 남아 있는 프로세스가 있다면 대기 시간 증가
+            // 일반적으로 current_running == NULL이고 ready_queue.count > 0인 상황은
+            // 위의 스케줄러 호출에서 처리되므로 거의 발생하지 않습니다.
+            for (int i = 0; i < ready_queue.count; i++) {
+                ready_queue.list[i]->Waiting_Time++;
             }
         }
-
-        // 4. 스케줄러 호출
-        if (current_running == NULL && ready_queue.count > 0) {
-            switch (algo) {
-                case ALGO_FCFS: case ALGO_RR: current_running = Schedule_FCFS(&ready_queue); break;
-                case ALGO_NP_SJF:             current_running = Schedule_SJF_NonPreemp(&ready_queue); break;
-                case ALGO_NP_PRIORITY:        current_running = Schedule_Priority_NonPreemp(&ready_queue); break;
-                case ALGO_P_SJF:              Sort_ReadyQueue(&ready_queue, compare_srtf); current_running = Remove_ReadyQueue(&ready_queue, 0); break;
-                case ALGO_P_PRIORITY:         Sort_ReadyQueue(&ready_queue, compare_priority_preemp); current_running = Remove_ReadyQueue(&ready_queue, 0); break;
-            }
-            current_running->P_State = RUNNING;
-            if (show_logs) printf("[TIME %3d] PID %d CPU Allocated!\n", system_time, current_running->PID);
-        }
-
-        // 5. 간트 차트 기록 및 대기 시간 누적
-        if (current_running != NULL) gantt_record[system_time] = current_running->PID;
-        for (int i = 0; i < ready_queue.count; i++) ready_queue.list[i]->Waiting_Time++;
 
         system_time++;
     }
@@ -615,22 +706,30 @@ AlgoResult Execute_Simulation(Process origin_pool[], int num_processes, AlgoType
         printf("\n=================================================================\n");
         printf(" Gantt Chart (CPU Timeline)\n");
         printf("=================================================================\n");
-        int current_pid = gantt_record[0], start_t = 0;
+
+        int current_pid = gantt_record[0];
+        int start_t = 0;
+
         for (int t = 1; t <= system_time; t++) {
             if (t == system_time || gantt_record[t] != current_pid) {
                 
-                // 🛠️ [추가된 방어 코드] 마지막 블록이 IDLE이고, 시뮬레이션의 끝이라면 그리지 않고 탈출!
+                // 마지막 블록이 IDLE이고, 시뮬레이션의 끝이라면 그리지 않고 탈출
                 if (current_pid == -1 && t == system_time) {
                     break;
                 }
 
-                if (current_pid == -1) printf("| IDLE (%d-%d) ", start_t, t);
-                else printf("| P%d (%d-%d) ", current_pid, start_t, t);
+                if (current_pid == -1) {
+                    printf("| IDLE (%d-%d) ", start_t, t);
+                }
+                else {
+                    printf("| P%d (%d-%d) ", current_pid, start_t, t);
+                }
                 
                 current_pid = gantt_record[t];
                 start_t = t;
             }
         }
+
         printf("|\n=================================================================\n");
     }
 
@@ -713,8 +812,13 @@ int main() {
 
             case 5:
                 printf(" Enter Time Quantum for Round Robin (Integer): ");
-                scanf("%d", &time_quantum);
-                if (time_quantum <= 0) {
+
+                if (scanf("%d", &time_quantum) != 1) {
+                    while (getchar() != '\n');
+                    printf("Invalid input. Setting to default (3).\n");
+                    time_quantum = 3;
+                }
+                else if (time_quantum <= 0) {
                     printf("Invalid time. Setting to default (3).\n");
                     time_quantum = 3;
                 }
@@ -725,9 +829,12 @@ int main() {
                 printf("\n=================================================================\n");
                 printf("Comprehensive Evaluation Setup\n");
                 printf(" Enter Time Quantum for Round Robin (Integer): ");
-                scanf("%d", &time_quantum);
-                
-                if (time_quantum <= 0) {
+                if (scanf("%d", &time_quantum) != 1) {
+                    while (getchar() != '\n');
+                    printf("Invalid input. Setting to default (3).\n");
+                    time_quantum = 3;
+                }
+                else if (time_quantum <= 0) {
                     printf("Invalid time. Setting to default (3).\n");
                     time_quantum = 3;
                 }
@@ -756,11 +863,15 @@ int main() {
                 printf("\n=================================================================\n");
                 printf("[Stress Test] Testing 20 independent process sets.\n");
                 printf(" Enter Time Quantum for Round Robin (Integer): ");
-                scanf("%d", &time_quantum);
                 
-                if (time_quantum <= 0) {
-                    printf("Invalid time. Setting to default (5).\n");
-                    time_quantum = 5;
+                if (scanf("%d", &time_quantum) != 1) {
+                    while (getchar() != '\n');
+                    printf("Invalid input. Setting to default (3).\n");
+                    time_quantum = 3;
+                }
+                else if (time_quantum <= 0) {
+                    printf("Invalid time. Setting to default (3).\n");
+                    time_quantum = 3;
                 }
 
                 printf("\nRunning 20 simulations in the background. Please wait...\n");
@@ -799,6 +910,9 @@ int main() {
                 printf("Invalid input. Please enter a number between 1 and 10.\n");
                 break;
         }
+    }
+    if (log_file != NULL) {
+        fclose(log_file);
     }
     return 0;
 }
